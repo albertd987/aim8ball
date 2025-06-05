@@ -152,17 +152,17 @@ class SmartCalibrationSystem(private val context: Context) {
         if (horizontalLines.size < 2 || verticalLines.size < 2) return null
 
         // Encontrar rectángulo formado por las líneas más prominentes
-        val topLine = horizontalLines.minByOrNull { it.y }
-        val bottomLine = horizontalLines.maxByOrNull { it.y }
-        val leftLine = verticalLines.minByOrNull { it.x }
-        val rightLine = verticalLines.maxByOrNull { it.x }
+        val topLine = horizontalLines.minByOrNull { it.y1 }
+        val bottomLine = horizontalLines.maxByOrNull { it.y1 }
+        val leftLine = verticalLines.minByOrNull { it.x1 }
+        val rightLine = verticalLines.maxByOrNull { it.x1 }
 
         if (topLine != null && bottomLine != null && leftLine != null && rightLine != null) {
             return RectF(
-                leftLine.x.toFloat(),
-                topLine.y.toFloat(),
-                rightLine.x.toFloat(),
-                bottomLine.y.toFloat()
+                leftLine.x1.toFloat(),
+                topLine.y1.toFloat(),
+                rightLine.x1.toFloat(),
+                bottomLine.y1.toFloat()
             )
         }
 
@@ -200,9 +200,6 @@ class SmartCalibrationSystem(private val context: Context) {
         if (rectangles.isEmpty()) return null
         if (rectangles.size == 1) return rectangles.first()
 
-        // Encontrar intersección que tenga consenso de al menos 60% de los algoritmos
-        val minConsensus = (rectangles.size * 0.6f).toInt()
-
         // Calcular rectángulo promedio ponderado
         var weightedLeft = 0f
         var weightedTop = 0f
@@ -239,7 +236,6 @@ class SmartCalibrationSystem(private val context: Context) {
 
         // Estimar tamaño de bola basado en el tamaño de la mesa
         val tableWidth = tableBounds.width()
-        val tableHeight = tableBounds.height()
 
         // En 8 Ball Pool, las bolas son aproximadamente 1/40 del ancho de la mesa
         sizes.ballRadius = (tableWidth / 40f).coerceIn(8f, 25f)
@@ -486,29 +482,6 @@ class SmartCalibrationSystem(private val context: Context) {
         }
     }
 
-    private fun updateBallDetectionParameters(correction: ManualCorrection) {
-        // Ajustar parámetros de detección de bolas basado en la corrección
-        val learningRate = LEARNING_RATE
-
-        correction.detectedPosition?.let { detected ->
-            correction.correctedPosition?.let { corrected ->
-                val error = PointF(
-                    corrected.x - detected.x,
-                    corrected.y - detected.y
-                )
-
-                // Actualizar offset de detección
-                currentConfig.ballDetectionOffset.x += error.x * learningRate
-                currentConfig.ballDetectionOffset.y += error.y * learningRate
-
-                // Ajustar tolerancia de color si es necesario
-                if (abs(error.x) > 10f || abs(error.y) > 10f) {
-                    currentConfig.colorTolerance = (currentConfig.colorTolerance + 2).coerceAtMost(50)
-                }
-            }
-        }
-    }
-
     private fun updateTableDetectionParameters(correction: ManualCorrection) {
         // Placeholder para actualización de parámetros de mesa
     }
@@ -519,6 +492,308 @@ class SmartCalibrationSystem(private val context: Context) {
 
     private fun updatePhysicsParameters(correction: ManualCorrection) {
         // Placeholder para actualización de parámetros de física
+    }
+
+    // ========== FUNCIONES AUXILIARES IMPLEMENTADAS ==========
+
+    private fun applySobelEdgeDetection(bitmap: Bitmap): Array<Array<Float>> {
+        val width = bitmap.width
+        val height = bitmap.height
+        val edges = Array(height) { Array(width) { 0f } }
+
+        // Implementación básica de Sobel
+        for (y in 1 until height - 1) {
+            for (x in 1 until width - 1) {
+                val gx = getGradientX(bitmap, x, y)
+                val gy = getGradientY(bitmap, x, y)
+                edges[y][x] = sqrt(gx * gx + gy * gy)
+            }
+        }
+
+        return edges
+    }
+
+    private fun getGradientX(bitmap: Bitmap, x: Int, y: Int): Float {
+        val pixel1 = Color.red(bitmap.getPixel(x - 1, y - 1)) + Color.red(bitmap.getPixel(x - 1, y)) * 2 + Color.red(bitmap.getPixel(x - 1, y + 1))
+        val pixel2 = Color.red(bitmap.getPixel(x + 1, y - 1)) + Color.red(bitmap.getPixel(x + 1, y)) * 2 + Color.red(bitmap.getPixel(x + 1, y + 1))
+        return (pixel2 - pixel1).toFloat()
+    }
+
+    private fun getGradientY(bitmap: Bitmap, x: Int, y: Int): Float {
+        val pixel1 = Color.red(bitmap.getPixel(x - 1, y - 1)) + Color.red(bitmap.getPixel(x, y - 1)) * 2 + Color.red(bitmap.getPixel(x + 1, y - 1))
+        val pixel2 = Color.red(bitmap.getPixel(x - 1, y + 1)) + Color.red(bitmap.getPixel(x, y + 1)) * 2 + Color.red(bitmap.getPixel(x + 1, y + 1))
+        return (pixel2 - pixel1).toFloat()
+    }
+
+    private fun findHorizontalLines(edges: Array<Array<Float>>): List<Line> {
+        val lines = mutableListOf<Line>()
+        val threshold = 100f
+
+        for (y in edges.indices) {
+            var startX = -1
+            for (x in edges[y].indices) {
+                if (edges[y][x] > threshold) {
+                    if (startX == -1) startX = x
+                } else {
+                    if (startX != -1 && x - startX > 20) {
+                        lines.add(Line(startX, y, x, y, edges[y][x]))
+                    }
+                    startX = -1
+                }
+            }
+        }
+
+        return lines
+    }
+
+    private fun findVerticalLines(edges: Array<Array<Float>>): List<Line> {
+        val lines = mutableListOf<Line>()
+        val threshold = 100f
+
+        for (x in 0 until edges[0].size) {
+            var startY = -1
+            for (y in edges.indices) {
+                if (edges[y][x] > threshold) {
+                    if (startY == -1) startY = y
+                } else {
+                    if (startY != -1 && y - startY > 20) {
+                        lines.add(Line(x, startY, x, y, edges[y][x]))
+                    }
+                    startY = -1
+                }
+            }
+        }
+
+        return lines
+    }
+
+    private fun calculateContrastMap(bitmap: Bitmap): Array<Array<Float>> {
+        val width = bitmap.width
+        val height = bitmap.height
+        val contrastMap = Array(height) { Array(width) { 0f } }
+
+        for (y in 1 until height - 1) {
+            for (x in 1 until width - 1) {
+                val centerPixel = bitmap.getPixel(x, y)
+                val centerBrightness = Color.red(centerPixel) + Color.green(centerPixel) + Color.blue(centerPixel)
+
+                var maxDiff = 0
+                for (dy in -1..1) {
+                    for (dx in -1..1) {
+                        val neighborPixel = bitmap.getPixel(x + dx, y + dy)
+                        val neighborBrightness = Color.red(neighborPixel) + Color.green(neighborPixel) + Color.blue(neighborPixel)
+                        val diff = abs(centerBrightness - neighborBrightness)
+                        if (diff > maxDiff) maxDiff = diff
+                    }
+                }
+
+                contrastMap[y][x] = maxDiff.toFloat()
+            }
+        }
+
+        return contrastMap
+    }
+
+    private fun findHighContrastRectangle(contrastMap: Array<Array<Float>>): RectF? {
+        // Implementación básica: encontrar región con alto contraste promedio
+        var bestRect: RectF? = null
+        var bestScore = 0f
+
+        val height = contrastMap.size
+        val width = contrastMap[0].size
+
+        for (y1 in 0 until height - 50) {
+            for (x1 in 0 until width - 50) {
+                for (y2 in y1 + 50 until height) {
+                    for (x2 in x1 + 50 until width) {
+                        val score = calculateRectangleContrastScore(contrastMap, x1, y1, x2, y2)
+                        if (score > bestScore) {
+                            bestScore = score
+                            bestRect = RectF(x1.toFloat(), y1.toFloat(), x2.toFloat(), y2.toFloat())
+                        }
+                    }
+                }
+            }
+        }
+
+        return bestRect
+    }
+
+    private fun calculateRectangleContrastScore(contrastMap: Array<Array<Float>>, x1: Int, y1: Int, x2: Int, y2: Int): Float {
+        var totalContrast = 0f
+        var count = 0
+
+        for (y in y1 until y2) {
+            for (x in x1 until x2) {
+                totalContrast += contrastMap[y][x]
+                count++
+            }
+        }
+
+        return if (count > 0) totalContrast / count else 0f
+    }
+
+    private fun templateMatching(bitmap: Bitmap, template: RectF): TemplateMatch {
+        // Implementación básica de template matching
+        val templateWidth = template.width().toInt()
+        val templateHeight = template.height().toInt()
+
+        var bestMatch = TemplateMatch(RectF(), 0f)
+        var bestScore = 0f
+
+        for (y in 0 until bitmap.height - templateHeight) {
+            for (x in 0 until bitmap.width - templateWidth) {
+                val score = calculateTemplateMatchScore(bitmap, x, y, template)
+                if (score > bestScore) {
+                    bestScore = score
+                    bestMatch = TemplateMatch(
+                        RectF(x.toFloat(), y.toFloat(), (x + templateWidth).toFloat(), (y + templateHeight).toFloat()),
+                        score
+                    )
+                }
+            }
+        }
+
+        return bestMatch
+    }
+
+    private fun calculateTemplateMatchScore(bitmap: Bitmap, x: Int, y: Int, template: RectF): Float {
+        // Score basado en similitud de color promedio
+        var score = 0f
+        val templateColors = getTemplateColors(template)
+        val regionColors = getRegionColors(bitmap, x, y, template.width().toInt(), template.height().toInt())
+
+        if (templateColors.isNotEmpty() && regionColors.isNotEmpty()) {
+            score = calculateColorSimilarity(templateColors, regionColors)
+        }
+
+        return score
+    }
+
+    private fun findLargestConnectedRegion(bitmap: Bitmap, targetColor: Int, tolerance: Int): RectF? {
+        val visited = Array(bitmap.height) { BooleanArray(bitmap.width) }
+        var largestRegion: List<Point>? = null
+        var largestSize = 0
+
+        for (y in 0 until bitmap.height) {
+            for (x in 0 until bitmap.width) {
+                if (!visited[y][x] && isColorSimilarForRegion(bitmap.getPixel(x, y), targetColor, tolerance)) {
+                    val region = floodFill(bitmap, x, y, targetColor, tolerance, visited)
+                    if (region.size > largestSize) {
+                        largestSize = region.size
+                        largestRegion = region
+                    }
+                }
+            }
+        }
+
+        return largestRegion?.let { region ->
+            val minX = region.minOf { it.x }.toFloat()
+            val maxX = region.maxOf { it.x }.toFloat()
+            val minY = region.minOf { it.y }.toFloat()
+            val maxY = region.maxOf { it.y }.toFloat()
+            RectF(minX, minY, maxX, maxY)
+        }
+    }
+
+    private fun floodFill(bitmap: Bitmap, startX: Int, startY: Int, targetColor: Int, tolerance: Int, visited: Array<BooleanArray>): List<Point> {
+        val region = mutableListOf<Point>()
+        val queue = mutableListOf(Point(startX, startY))
+
+        while (queue.isNotEmpty()) {
+            val point = queue.removeAt(0)
+            val x = point.x
+            val y = point.y
+
+            if (x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height || visited[y][x]) continue
+
+            val pixelColor = bitmap.getPixel(x, y)
+            if (!isColorSimilarForRegion(pixelColor, targetColor, tolerance)) continue
+
+            visited[y][x] = true
+            region.add(Point(x, y))
+
+            // Agregar vecinos
+            queue.add(Point(x + 1, y))
+            queue.add(Point(x - 1, y))
+            queue.add(Point(x, y + 1))
+            queue.add(Point(x, y - 1))
+        }
+
+        return region
+    }
+
+    private fun isColorSimilarForRegion(color1: Int, color2: Int, tolerance: Int): Boolean {
+        val r1 = Color.red(color1)
+        val g1 = Color.green(color1)
+        val b1 = Color.blue(color1)
+
+        val r2 = Color.red(color2)
+        val g2 = Color.green(color2)
+        val b2 = Color.blue(color2)
+
+        return abs(r1 - r2) <= tolerance &&
+                abs(g1 - g2) <= tolerance &&
+                abs(b1 - b2) <= tolerance
+    }
+
+    private fun clusterPoints(points: List<Point>, maxDistance: Float): List<List<Point>> {
+        val clusters = mutableListOf<MutableList<Point>>()
+        val visited = mutableSetOf<Point>()
+
+        for (point in points) {
+            if (point in visited) continue
+
+            val cluster = mutableListOf<Point>()
+            val queue = mutableListOf(point)
+
+            while (queue.isNotEmpty()) {
+                val current = queue.removeAt(0)
+                if (current in visited) continue
+
+                visited.add(current)
+                cluster.add(current)
+
+                for (other in points) {
+                    if (other !in visited) {
+                        val distance = sqrt(
+                            (current.x - other.x).toFloat().pow(2) +
+                                    (current.y - other.y).toFloat().pow(2)
+                        )
+                        if (distance <= maxDistance) {
+                            queue.add(other)
+                        }
+                    }
+                }
+            }
+
+            if (cluster.size >= 5) {
+                clusters.add(cluster)
+            }
+        }
+
+        return clusters
+    }
+
+    private fun isWhiteish(pixel: Int, tolerance: Int): Boolean {
+        val r = Color.red(pixel)
+        val g = Color.green(pixel)
+        val b = Color.blue(pixel)
+
+        // Verificar que todos los componentes estén cerca del blanco
+        return r >= 255 - tolerance && g >= 255 - tolerance && b >= 255 - tolerance
+    }
+
+    private fun getRegionColors(bitmap: Bitmap, x: Int, y: Int, width: Int, height: Int): List<Int> {
+        val colors = mutableListOf<Int>()
+        for (dy in 0 until height step 5) {
+            for (dx in 0 until width step 5) {
+                if (x + dx < bitmap.width && y + dy < bitmap.height) {
+                    colors.add(bitmap.getPixel(x + dx, y + dy))
+                }
+            }
+        }
+        return colors
     }
 
     // Funciones auxiliares simplificadas
